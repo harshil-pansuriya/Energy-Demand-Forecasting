@@ -1,0 +1,11 @@
+# Data manipulation and analysis
+pandas==1.5.3
+numpy==1.23.5
+
+# Machine learning
+scikit-learn==1.2.0
+joblib==1.2.0
+
+# Data visualization (optional, if you plan to use it)
+matplotlib==3.6.2
+seaborn==0.12.1
