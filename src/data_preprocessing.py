@@ -4,9 +4,7 @@ import logging
 
 class DataPreprocessor:
     
-    filepath='data/raw/household_power_consumption.csv'
-    
-    def __init__(self, logging_level: int = logging.INFO):
+    def __init__(self, logging_level = logging.INFO):
         # Initialize DataPreprocessor with configuration
         self.numerical_columns = [
             'Global_active_power', 'Global_reactive_power',
@@ -18,7 +16,7 @@ class DataPreprocessor:
         logging.basicConfig(level=logging_level)
         self.logger = logging.getLogger(__name__)
         
-    def load_data(self, filepath: str) -> pd.DataFrame:
+    def load_data(self, filepath):
        
         # Load and perform initial parsing of the dataset
         try:
@@ -29,7 +27,7 @@ class DataPreprocessor:
             self.logger.error(f"Error loading data: {str(e)}")
             raise
     
-    def handle_datetime(self, df: pd.DataFrame) -> pd.DataFrame:
+    def handle_datetime(self, df):
 
         #Handle datetime parsing with mixed formats
         df = df.copy()
@@ -40,7 +38,7 @@ class DataPreprocessor:
             df_part2 = df.iloc[split_idx:].copy()
             
             # Parse datetime for both parts
-            df_part1['Datetime'] = pd.to_datetime(df_part1['Date'] + ' ' + df_part1['Time'], dayfirst=True, errors='coerce')
+            df_part1['Datetime'] = pd.to_datetime(df_part1['Date'] + ' ' + df_part1['Time'],dayfirst=True, errors='coerce')
             df_part2['Datetime'] = pd.to_datetime(df_part2['Date'] + ' ' + df_part2['Time'], dayfirst=True, errors='coerce')
             
             # Combine parts
@@ -55,14 +53,14 @@ class DataPreprocessor:
             self.logger.error(f"Error processing datetime: {str(e)}")
             raise
         
-    def convert_numeric_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+    def convert_numeric_columns(self, df):
        
         # Convert columns to appropriate numeric types
         df = df.copy()
         df[self.numerical_columns] = df[self.numerical_columns].apply(pd.to_numeric, errors='coerce')
         return df
     
-    def handle_outliers(self, df: pd.DataFrame, method: str = 'iqr', threshold: float = 1.5) -> pd.DataFrame:
+    def handle_outliers(self, df, method = 'iqr', threshold= 1.5):
         
         # Handle outliers using specified method
         df = df.copy()
@@ -82,7 +80,7 @@ class DataPreprocessor:
             
         return df
     
-    def preprocess_pipeline(self, filepath: str, handle_outliers: bool = True) -> pd.DataFrame:
+    def preprocess_pipeline(self, filepath, handle_outliers= True):
         
         # Complete preprocessing pipeline
         try:
