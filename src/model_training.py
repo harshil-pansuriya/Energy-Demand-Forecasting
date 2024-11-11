@@ -1,201 +1,104 @@
 import pandas as pd
 import numpy as np
-import os
-import json, pickle
-from sklearn.metrics import mean_squared_error, mean_absolute_error
 from sklearn.preprocessing import MinMaxScaler
+import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization
+import os, json, pickle
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
 
-# Simple settings for our model      # Number of samples to process at once
-feature_cols = [
-    # Main target
-    'Global_active_power',
+class PowerPredictionModel:
+    def __init__(self, data_file='data/processed/featuredd_power_consumption.csv'):
+        self.data_file = data_file
+        # Only keep features that are most important for predictions
+        self.feature_cols = [
+            'Global_active_power',          # Target variable
+            'Global_reactive_power',        # Important for power factor
+            'total_submetering',           # Direct power consumption component
+            'hour_sin',                    # Cyclical time patterns
+            'hour_cos',                    # Cyclical time patterns
+            'is_weekend',                  # Weekly consumption patterns
+            'Global_active_power_24h_avg', # Historical trend
+            'submetering_ma'              # Moving average for trend
+        ]
     
-    # Power-related features
-    'Global_reactive_power',
-    'total_submetering',
-    'unknown_power',
-    'power_factor',
-    'active_power_change',
-    
-    # Time-based features
-    'hour',
-    'is_weekend',
-    
-    # Statistical features
-    'Global_active_power_24h_avg',
-    'Global_active_power_24h_std'
-]
-
-data_file = 'data/processed/featuredd_power_consumption.csv'
-
-def create_sequences(data, seq_length=24):
-    X, y = [], []
-    for i in range(len(data) - seq_length):
-        # Get sequence of seq_length values
-        X.append(data[i:(i + seq_length), :])
-        # Get the next value after the sequence
-        y.append(data[i + seq_length, :])
+    def prepare_data(self, sequence_length=24):
+        """Prepare data for training with only essential features"""
+        df = pd.read_csv(self.data_file)
         
-    return np.array(X), np.array(y)
-
-def prepare_data(df, train_split=0.8):
-    """
-    Prepares data for training by scaling and creating sequences
-    """
-    # Make sure data is in time order
-    df = df.sort_values('Datetime')
-    
-    # Scale the power consumption values between 0 and 1
-    scaler = MinMaxScaler()
-    scaled_data = scaler.fit_transform(df[feature_cols])
-    
-    # Create sequences for training
-    X, y = create_sequences(scaled_data)
-    
-    # Split into training and testing sets
-    train_size = int(len(X) * train_split)
-    
-    X_train = X[:train_size]
-    X_test = X[train_size:]
-    y_train = y[:train_size]
-    y_test = y[train_size:]
-    
-    print(f"Training data shape: {X_train.shape}")
-    print(f"Testing data shape: {X_test.shape}")
-    
-    return X_train, X_test, y_train, y_test, scaler
-
-def build_model(sequence_length=24, n_features=len(feature_cols)):
-    """
-    Creates a simple LSTM model
-    """
-    model = Sequential([
-        # First LSTM layer
-        LSTM(64, activation='relu', input_shape=(sequence_length, n_features), return_sequences=True),
-        Dropout(0.2),
+        # Scale features
+        scaler = MinMaxScaler()
+        scaled_data = scaler.fit_transform(df[self.feature_cols].fillna(0))
         
-        # Second LSTM layer
-        LSTM(32, activation='relu'),
-        Dropout(0.2),
+        # Create sequences
+        X, y = self._create_sequences(scaled_data, sequence_length)
+        train_size = int(len(X) * 0.8)
         
-        # Dense layers for final prediction
-        Dense(16, activation='relu'),
-        Dense(n_features)
-    ])
-    model.compile(optimizer='adam', loss='mse')
-    model.summary()
-    return model
-
-def train_model(model, X_train, y_train, X_test, y_test, epochss=20, batch_size=32):
-    """
-    Trains the LSTM model
-    """
-    # Set up early stopping to prevent overfitting
-    early_stopping = EarlyStopping(
-        monitor='val_loss',
-        patience=5,
-        restore_best_weights=True
-    )
+        return (X[:train_size], X[train_size:], y[:train_size], y[train_size:], scaler)
     
-    # Train the model
-    history = model.fit(
-        X_train, y_train,
-        epochs=epochss,
-        batch_size=batch_size,
-        validation_data=(X_test, y_test),
-        callbacks=[early_stopping],
-        verbose=1
-    )
+    def _create_sequences(self, data, seq_length):
+        """Create sequences for LSTM"""
+        X, y = [], []
+        for i in range(len(data) - seq_length):
+            X.append(data[i:(i + seq_length), :])
+            y.append(data[i + seq_length, 0])  # Predict Global_active_power
+        return np.array(X), np.array(y)
     
-    print("Model training completed!")
-    return model, history
-
-def evaluate_model(model, X_test, y_test, scaler):
-    """
-    Tests how well the model performs
-    """
-    # Make predictions
-    predictions = model.predict(X_test)
-    
-    # Ensure correct shapes for inverse transform
-    if len(predictions.shape) == 2:
-        predictions_reshaped = predictions  # Already 2D
-    else:
-        predictions_reshaped = predictions.reshape(-1, len(feature_cols))
-        
-    if len(y_test.shape) == 2:
-        y_test_reshaped = y_test  # Already 2D
-    else:
-        y_test_reshaped = y_test.reshape(-1, len(feature_cols))
-    
-    # Convert predictions back to original scale
-    predictions = scaler.inverse_transform(predictions_reshaped)
-    y_test_scaled = scaler.inverse_transform(y_test_reshaped)
-    
-    metrics = {}
-    for i, col in enumerate(feature_cols):
-        col_metrics = {
-            'MSE': mean_squared_error(y_test_scaled[:, i], predictions[:, i]),
-            'RMSE': np.sqrt(mean_squared_error(y_test_scaled[:, i], predictions[:, i])),
-            'MAE': mean_absolute_error(y_test_scaled[:, i], predictions[:, i])
-        }
-        metrics[col] = col_metrics
-    print("\nPrediction Results:")
-    for col in feature_cols:
-        print(f"\n{col}:")
-        for metric, value in metrics[col].items():
-            print(f"{metric}: {value:.4f}")
+    def build_model(self, sequence_length=24, n_features=None):
+        """Build LSTM model with optimized architecture"""
+        if n_features is None:
+            n_features = len(self.feature_cols)
             
-    return predictions, metrics
-
-def save_model_artifacts(model, scaler, metrics, save_dir='models'):
-    """
-    Saves model and related artifacts
-    """
-    # Save model
-    model.save(f'{save_dir}/power_prediction_model.h5')
-    # Save scaler
-    with open(f'{save_dir}/scaler.pkl', 'wb') as f:
-        pickle.dump(scaler, f)
-    # Save metrics for each feature
-    with open(f'{save_dir}/metrics.json', 'w') as f:
-        json.dump({k: {mk: float(mv) for mk, mv in v.items()} 
-                  for k, v in metrics.items()}, f, indent=4)
-    # Save metrics
-    with open(f'{save_dir}/metrics.json', 'w') as f:
-        json.dump(metrics, f)
-
-def main():
-    try:
-        print("Loading data...")
-        df = pd.read_csv(data_file)
-        df['Datetime'] = pd.to_datetime(df['Datetime'])
+        model = Sequential([
+            LSTM(128, activation='relu',input_shape=(sequence_length, n_features), return_sequences=True),
+            Dropout(0.3),
+            LSTM(64, activation='relu'),
+            Dropout(0.2),
+            Dense(32, activation='relu'),
+            BatchNormalization(),
+            Dense(16, activation='relu'),
+            Dense(1)  # Output layer for predicting Global_active_power
+        ])
         
-        # Prepare the data
-        X_train, X_test, y_train, y_test, scaler = prepare_data(df)
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+            loss='mse',
+            metrics=['mae']
+        )
+        return model
+    
+    def train(self, epochs=50):
+        print("Preparing data...")
+        X_train, X_test, y_train, y_test, scaler = self.prepare_data()
         
-        # Train the model
-        model=build_model()
-        model,history = train_model(model, X_train, y_train, X_test, y_test)
+        print("Building model...")
+        model = self.build_model()
         
-        # Evaluate the model
-        predictions, metrics = evaluate_model(model, X_test, y_test, scaler)
-        
-        for metric, value in metrics.items():
-            print(f"{metric}: {value:.4f}")
-            
-        # Save the model
-        save_model_artifacts(model, scaler, metrics)
-        print("Model saved successfully!")
-        
-        return model, history, metrics, predictions
-        
-    except Exception as e:
-        print(f"An error occurred: {str(e)}")
-        raise
+        print("Training model...")
+        callbacks = [
+            EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True),
+            ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=0.0001),
+            ModelCheckpoint('models/best_model.keras', monitor='val_loss', save_best_only=True)
+        ]
+        history = model.fit(
+            X_train, y_train,
+            epochs=epochs,
+            batch_size=32,
+            validation_data=(X_test, y_test),
+            callbacks=callbacks,
+            verbose=1
+        )
+        self.save_model(model, scaler)
+        return model, history
+    
+    def save_model(self, model, scaler, save_dir='models'):
+        os.makedirs(save_dir, exist_ok=True)
+        model.save(os.path.join(save_dir, 'power_prediction_model.keras'))
+        with open(os.path.join(save_dir, 'scaler.pkl'), 'wb') as f:
+            pickle.dump(scaler, f)
+        with open(os.path.join(save_dir, 'feature_cols.json'), 'w') as f:
+            json.dump(self.feature_cols, f)
 
 if __name__ == "__main__":
-    model, history, metrics = main()
+    predictor = PowerPredictionModel()
+    model, history = predictor.train()

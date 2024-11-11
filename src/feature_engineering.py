@@ -25,6 +25,12 @@ class FeatureEngineer:
         # Mark weekends (1 for weekend, 0 for weekday)
         df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
         
+        df['hour_sin'] = np.sin(2 * np.pi * df['hour']/24)
+        df['hour_cos'] = np.cos(2 * np.pi * df['hour']/24)
+        
+        # Add peak hours
+        df['peak_hours'] = ((df['hour'] >= 7) & (df['hour'] <= 9) | (df['hour'] >= 17) & (df['hour'] <= 19)).astype(int)
+        
         # Add time of day category
         df['time_of_day'] = pd.cut(
             df['hour'], 
@@ -57,6 +63,8 @@ class FeatureEngineer:
         
         # Calculate changes in active power (most important for prediction)
         df['active_power_change'] = df['Global_active_power'].diff()
+        df['weighted_submetering'] = df['total_submetering'] * 0.666
+        df['weighted_power_factor'] = df['power_factor'] * 0.432
         return df
     
     def create_statistical_features(self, df):
@@ -75,6 +83,7 @@ class FeatureEngineer:
         
         # Previous day's value (important for prediction)
         df[f'{imp_col}_previous_24h'] = df[imp_col].shift(window)
+        df['submetering_ma'] = df['total_submetering'].rolling(24).mean()
         return df
     
     def create_all_features(self, df):
@@ -97,7 +106,6 @@ class FeatureEngineer:
             
             # Remove any rows with missing values
             df = df.dropna()
-            
             
             # List final features for visibility
             new_features = set(df.columns) - set(['Datetime'] + self.power_columns + self.submetering_columns)
