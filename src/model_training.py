@@ -1,104 +1,106 @@
-import pandas as pd
-import numpy as np
-from sklearn.preprocessing import MinMaxScaler
 import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization
-import os, json, pickle
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, LSTM, Dense, Dropout, BatchNormalization, Flatten, AdditiveAttention, Multiply
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import os
+import pickle
 
-class PowerPredictionModel:
-    def __init__(self, data_file='data/processed/featuredd_power_consumption.csv'):
-        self.data_file = data_file
-        # Only keep features that are most important for predictions
-        self.feature_cols = [
-            'Global_active_power',          # Target variable
-            'Global_reactive_power',        # Important for power factor
-            'total_submetering',           # Direct power consumption component
-            'hour_sin',                    # Cyclical time patterns
-            'hour_cos',                    # Cyclical time patterns
-            'is_weekend',                  # Weekly consumption patterns
-            'Global_active_power_24h_avg', # Historical trend
-            'submetering_ma'              # Moving average for trend
-        ]
+class EnergyPredictor:
+    def __init__(self, data_path, look_back=168):
+        self.data_path = data_path
+        self.look_back = look_back
+        self.scaler = MinMaxScaler(feature_range=(0,1))
+        self.model = None
+        os.makedirs('models', exist_ok=True)
+        self.model_path = 'models/best_model.keras'
+        self.scaler_path = 'models/scaler.pkl'
     
-    def prepare_data(self, sequence_length=24):
-        """Prepare data for training with only essential features"""
-        df = pd.read_csv(self.data_file)
-        
-        # Scale features
-        scaler = MinMaxScaler()
-        scaled_data = scaler.fit_transform(df[self.feature_cols].fillna(0))
-        
-        # Create sequences
-        X, y = self._create_sequences(scaled_data, sequence_length)
-        train_size = int(len(X) * 0.8)
-        
-        return (X[:train_size], X[train_size:], y[:train_size], y[train_size:], scaler)
-    
-    def _create_sequences(self, data, seq_length):
-        """Create sequences for LSTM"""
+    def prepare_sequences(self, data):
         X, y = [], []
-        for i in range(len(data) - seq_length):
-            X.append(data[i:(i + seq_length), :])
-            y.append(data[i + seq_length, 0])  # Predict Global_active_power
+        for i in range(len(data) - self.look_back - 1):
+            X.append(data[i:(i + self.look_back), 0])
+            y.append(data[i + self.look_back, 0])
         return np.array(X), np.array(y)
+
+    def prepare_data(self):
+        df = pd.read_csv(self.data_path)
+        dataset = df.Global_active_power.values.reshape(-1,1)
+        scaled_data = self.scaler.fit_transform(dataset)
+        
+        train_size = int(len(scaled_data) * 0.8)
+        train, test = scaled_data[:train_size], scaled_data[train_size:]
+        
+        X_train, y_train = self.prepare_sequences(train)
+        X_test, y_test = self.prepare_sequences(test)
+        X_train = X_train.reshape(-1, self.look_back, 1)
+        X_test = X_test.reshape(-1, self.look_back, 1)
     
-    def build_model(self, sequence_length=24, n_features=None):
-        """Build LSTM model with optimized architecture"""
-        if n_features is None:
-            n_features = len(self.feature_cols)
-            
-        model = Sequential([
-            LSTM(128, activation='relu',input_shape=(sequence_length, n_features), return_sequences=True),
-            Dropout(0.3),
-            LSTM(64, activation='relu'),
-            Dropout(0.2),
-            Dense(32, activation='relu'),
-            BatchNormalization(),
-            Dense(16, activation='relu'),
-            Dense(1)  # Output layer for predicting Global_active_power
-        ])
-        
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-            loss='mse',
-            metrics=['mae']
-        )
-        return model
+        return X_train, X_test, y_train, y_test
     
-    def train(self, epochs=50):
-        print("Preparing data...")
-        X_train, X_test, y_train, y_test, scaler = self.prepare_data()
+    def build_model(self, input_shape):
+        input_layer = Input(shape=input_shape)
+        lstm_1 = LSTM(units=50, return_sequences=True)(input_layer)
+        batch_norm_1 = BatchNormalization()(lstm_1)
+        lstm_2 = LSTM(units=50, return_sequences=True)(batch_norm_1)
+        batch_norm_2 = BatchNormalization()(lstm_2)
+        #Attention Mechanism
+        attention = AdditiveAttention(name='attention_weight')
+        attention_output = attention([batch_norm_2, batch_norm_2])
+        multiply_layer = Multiply()([batch_norm_2, attention_output])
         
-        print("Building model...")
-        model = self.build_model()
+        flatten_layer = Flatten()(multiply_layer)
+        dropout_layer = Dropout(0.3)(flatten_layer)
+        output_layer = Dense(1)(dropout_layer)
         
-        print("Training model...")
+        self.model = Model(inputs=input_layer, outputs=output_layer)
+        self.model.compile(optimizer='adam', loss='mean_squared_error', metrics=['mae'])
+        
+    def train(self, epochs=20, batch_size=128):
+        X_train, X_test, y_train, y_test = self.prepare_data()
+        if self.model is None:
+            self.build_model((self.look_back, 1))
+        
         callbacks = [
-            EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True),
-            ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=0.0001),
-            ModelCheckpoint('models/best_model.keras', monitor='val_loss', save_best_only=True)
+            EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
+            ModelCheckpoint(self.model_path, save_best_only=True, monitor='val_loss'),
+            ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5, min_lr=1e-6)
         ]
-        history = model.fit(
-            X_train, y_train,
-            epochs=epochs,
-            batch_size=32,
-            validation_data=(X_test, y_test),
-            callbacks=callbacks,
-            verbose=1
-        )
-        self.save_model(model, scaler)
-        return model, history
+        history = self.model.fit(X_train, y_train,epochs=epochs,batch_size=batch_size,
+                                 validation_split=0.1, callbacks=callbacks)
+        
+        with open(self.scaler_path, 'wb') as f:  # Using self.scaler_path
+            pickle.dump(self.scaler, f)
+            print(f"Scaler saved to {self.scaler_path}")
+        
+        print("\nEvaluating model performance...")
+        metrics = self.evaluate(X_test, y_test)
+        return history, metrics
     
-    def save_model(self, model, scaler, save_dir='models'):
-        os.makedirs(save_dir, exist_ok=True)
-        model.save(os.path.join(save_dir, 'power_prediction_model.keras'))
-        with open(os.path.join(save_dir, 'scaler.pkl'), 'wb') as f:
-            pickle.dump(scaler, f)
-        with open(os.path.join(save_dir, 'feature_cols.json'), 'w') as f:
-            json.dump(self.feature_cols, f)
+    def evaluate(self, X_test, y_test):
+        if self.model is None:
+            raise ValueError("Model hasn't been trained yet")
+            
+        y_pred = self.model.predict(X_test)
+        return {
+            'mae': mean_absolute_error(y_test, y_pred),
+            'mse': mean_squared_error(y_test, y_pred),
+            'rmse': np.sqrt(mean_squared_error(y_test, y_pred)),
+            'r2': r2_score(y_test, y_pred)
+        }
+    def save_model(self): 
+        if self.model is not None:
+            self.model.save(self.model_path)
+            print(f"Model saved to {self.model_path}")
 
 if __name__ == "__main__":
-    predictor = PowerPredictionModel()
-    model, history = predictor.train()
+    predictor = EnergyPredictor('C:/Harshil/Data Science/End to end  Project/Energy_Demand/data/processed/featured_power_consumption.csv')
+    history, metrics = predictor.train()
+    
+    print("Model Performance Metrics:")
+    for metric, value in metrics.items():
+        print(f"{metric.upper()}: {value:.4f}")
+    predictor.save_model()

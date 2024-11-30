@@ -1,119 +1,66 @@
 import pandas as pd
 import numpy as np
+from scipy.stats import skew, kurtosis
 
 class FeatureEngineer:
     def __init__(self):
-        # Columns we'll work with
         self.power_columns = ['Global_active_power', 'Global_reactive_power']
         self.submetering_columns = ['Sub_metering_1', 'Sub_metering_2', 'Sub_metering_3']
-    
-    def create_time_features(self, df):
-        """
-        Creates new features based on time (hour, day, month, etc.)
-        """
-        df = df.copy()
+        self.decomposition_columns = ['Global_active_power_trend','Global_active_power_seasonal','Global_active_power_residual','Global_active_power_smooth',]
         
-        # Extract time information
+    def create_time_features(self, df):
         df['hour'] = df['Datetime'].dt.hour
         df['day'] = df['Datetime'].dt.day
-        df['month'] = df['Datetime'].dt.month
-        df['year'] = df['Datetime'].dt.year
-        
-        # Add day of week (0=Monday, 6=Sunday)
         df['day_of_week'] = df['Datetime'].dt.dayofweek
-        
-        # Mark weekends (1 for weekend, 0 for weekday)
         df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
-        
         df['hour_sin'] = np.sin(2 * np.pi * df['hour']/24)
         df['hour_cos'] = np.cos(2 * np.pi * df['hour']/24)
         
         # Add peak hours
         df['peak_hours'] = ((df['hour'] >= 7) & (df['hour'] <= 9) | (df['hour'] >= 17) & (df['hour'] <= 19)).astype(int)
         
-        # Add time of day category
-        df['time_of_day'] = pd.cut(
-            df['hour'], 
-            bins=[0, 6, 12, 18, 24], 
-            labels=['night', 'morning', 'afternoon', 'evening']
-        )
-        
         return df
     
     def create_power_features(self, df):
-        """
-        Creates new features related to power consumption
-        """
-        df = df.copy()
-        
         # Calculate total power from submeters
         df['total_submetering'] = df[self.submetering_columns].sum(axis=1)
-        
-        # Calculate unknown power consumption
         df['unknown_power'] = (df['Global_active_power'] * 1000/60) - df['total_submetering']
         
         # Calculate power factor (relationship between active and reactive power)
         df['power_factor'] = np.where(
-            df['Global_active_power'] == 0,
-            0,
+            df['Global_active_power'] == 0, 0,
             df['Global_active_power'] / np.sqrt(
                 df['Global_active_power']**2 + df['Global_reactive_power']**2
             )
         )
+        # Trend and seasonality based features
+        if 'Global_active_power_trend' in df.columns:
+            df['trend_ratio'] = df['Global_active_power'] / df['Global_active_power_trend']
+            df['seasonal_strength'] = abs(df['Global_active_power_seasonal']) / df['Global_active_power']
+            df['residual_ratio'] = abs(df['Global_active_power_residual']) / df['Global_active_power']
         
-        # Calculate changes in active power (most important for prediction)
-        df['active_power_change'] = df['Global_active_power'].diff()
-        df['weighted_submetering'] = df['total_submetering'] * 0.666
-        df['weighted_power_factor'] = df['power_factor'] * 0.432
         return df
     
-    def create_statistical_features(self, df):
-        """
-        Creates statistical features using different time windows
-        windows: list of hour values to look back
-        """
-        df = df.copy()
-        window=24
-        # Main columns to analyze
-        imp_col ='Global_active_power'
-        
-        # Daily average and standard deviation
-        df[f'{imp_col}_24h_avg'] = df[imp_col].rolling(window).mean()
-        df[f'{imp_col}_24h_std'] = df[imp_col].rolling(window).std()
-        
-        # Previous day's value (important for prediction)
-        df[f'{imp_col}_previous_24h'] = df[imp_col].shift(window)
-        df['submetering_ma'] = df['total_submetering'].rolling(24).mean()
+    def create_statistical_features(self, df,window=[24]):
+        for window in window:
+            for col in self.power_columns + self.decomposition_columns:
+                if col in df.columns:
+                    df[f"{col}_{window}h_mean"] = df[col].rolling(window).mean()
+                    df[f"{col}_{window}h_std"] = df[col].rolling(window).std()
+                    
+            for col in self.decomposition_columns:
+                if col in df.columns:
+                    df[f"{col}_{window}h_mean"] = df[col].rolling(window).mean()
         return df
     
     def create_all_features(self, df):
-        """
-        Main function to create all features
-        """
         try:
-            # First, preprocess the data
-            print("Preprocessing data...")
-            
-            # Create all features
             print("Creating time features...")
             df = self.create_time_features(df)
-            
-            print("Creating power features...")
             df = self.create_power_features(df)
-            
-            print("Creating statistical features...")
             df = self.create_statistical_features(df)
-            
-            # Remove any rows with missing values
             df = df.dropna()
-            
-            # List final features for visibility
-            new_features = set(df.columns) - set(['Datetime'] + self.power_columns + self.submetering_columns)
-            print("\nNew features created:")
-            for feature in sorted(new_features):
-                print(f"- {feature}")
-                
-            print("Feature creation completed!")
+            print(f"\nTotal features: {len(df.columns)}")
             return df
             
         except Exception as e:
