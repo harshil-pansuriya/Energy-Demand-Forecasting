@@ -31,14 +31,14 @@ The project is structured into several key components:
 - Time series components visualization
 
 ### Installation
-    ```
-    git clone https://github.com/harshil-pansuriya/Energy-Demand-Forecasting.git
-    ```
+```
+git clone https://github.com/harshil-pansuriya/Energy-Demand-Forecasting.git
+```
 ### Setup Environment
-    ```
-    python -m venv env_name
-    env_name/Scripts/activate
-    ```
+```
+python -m venv env_name
+env_name/Scripts/activate
+```
 pip install -r requirements.txt
 
 ### Usage
